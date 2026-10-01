@@ -16,48 +16,48 @@ import os
 from datetime import datetime
 from pathlib import Path
 
-import pytz
-
 from tradingagents.scanner import deep_dive, screens
+from tradingagents.scanner.market_calendar import ET, market_is_open
 from tradingagents.scanner.universe import get_universe
+
+# Re-exported for callers (and tests) that import it from this module.
+__all__ = ["market_is_open", "run_scan"]
 
 logger = logging.getLogger(__name__)
 
-ET = pytz.timezone("America/New_York")
 REPORT_ROOT = Path(__file__).resolve().parent.parent.parent / "reports" / "scanner"
 
-_XNYS_CAL = None
 
+def _summarize_deep_dive(top, analyses, do_dive: bool, llm_note: str):
+    """Build the watchlist, preserving each ticker's full analysis decision.
 
-def _xnys_calendar():
-    """NYSE calendar, lazily built; None when pandas_market_calendars is absent."""
-    global _XNYS_CAL
-    if _XNYS_CAL is None:
-        try:
-            import pandas_market_calendars as mcal
-        except ImportError:
-            return None
-        _XNYS_CAL = mcal.get_calendar("XNYS")
-    return _XNYS_CAL
-
-
-def market_is_open(now: datetime | None = None) -> bool:
-    """True during the NYSE regular session, exchange holidays excluded."""
-    now = now or datetime.now(ET)
-    if now.tzinfo is None:
-        now = ET.localize(now)
-    if now.weekday() >= 5:
-        return False
-    cal = _xnys_calendar()
-    if cal is None:  # fallback: no holiday data, assume a normal 9:30-16:00 day
-        open_t = now.replace(hour=9, minute=30, second=0, microsecond=0)
-        close_t = now.replace(hour=16, minute=0, second=0, microsecond=0)
-        return open_t <= now <= close_t
-    sched = cal.schedule(start_date=now.date(), end_date=now.date())
-    if sched.empty:  # exchange holiday
-        return False
-    row = sched.iloc[0]
-    return row["market_open"] <= now <= row["market_close"]
+    The deep-dive note is honest about partial failure: it says "completed"
+    only when every analysis succeeded.
+    """
+    analysis_by_ticker = {a["ticker"]: a for a in analyses}
+    watchlist = []
+    for c in top:
+        a = analysis_by_ticker.get(c.ticker, {})
+        watchlist.append({
+            "ticker": c.ticker,
+            "score": round(c.score, 2),
+            "reasons": c.reasons,
+            "facts": c.facts,
+            "signal": a.get("signal"),
+            "deep_dive": a.get("ok") is True,
+            "decision": a.get("decision"),
+        })
+    if not do_dive:
+        note = llm_note
+    else:
+        ok_n = sum(1 for a in analyses if a.get("ok"))
+        total = len(analyses)
+        note = (
+            "deep dive completed"
+            if ok_n == total
+            else f"deep dive partial: {ok_n}/{total} succeeded"
+        )
+    return watchlist, note
 
 
 def run_scan(top_n: int | None = None, deep_dive_enabled: bool | None = None) -> dict:
@@ -71,25 +71,13 @@ def run_scan(top_n: int | None = None, deep_dive_enabled: bool | None = None) ->
     logger.info("Scan %s | market open: %s", now.strftime("%H:%M ET"), is_open)
 
     tickers = get_universe()
-    candidates = screens.run_screens(tickers)
+    candidates, screen_stats = screens.run_screens(tickers)
     top = candidates[:top_n]
 
     llm_ok, llm_note = deep_dive.deep_dive_available()
     do_dive = bool(deep_dive_enabled and is_open and llm_ok and top)
     analyses = deep_dive.analyze_tickers([c.ticker for c in top], trade_date) if do_dive else []
-    analysis_by_ticker = {a["ticker"]: a for a in analyses}
-
-    watchlist = []
-    for c in top:
-        entry = {
-            "ticker": c.ticker,
-            "score": round(c.score, 2),
-            "reasons": c.reasons,
-            "facts": c.facts,
-            "signal": analysis_by_ticker.get(c.ticker, {}).get("signal"),
-            "deep_dive": analysis_by_ticker.get(c.ticker, {}).get("ok") is True,
-        }
-        watchlist.append(entry)
+    watchlist, dive_note = _summarize_deep_dive(top, analyses, do_dive, llm_note)
 
     result = {
         "scanned_at": now.isoformat(),
@@ -97,8 +85,9 @@ def run_scan(top_n: int | None = None, deep_dive_enabled: bool | None = None) ->
         "market_open": is_open,
         "universe_size": len(tickers),
         "candidates_found": len(candidates),
+        "stale_skipped": screen_stats["stale_skipped"],
         "deep_dive_ran": do_dive,
-        "deep_dive_note": llm_note if not do_dive else "deep dive completed",
+        "deep_dive_note": dive_note,
         "watchlist": watchlist,
     }
     _write_report(result, now)
@@ -116,6 +105,7 @@ def _write_report(result: dict, now: datetime) -> Path:
         "",
         f"Universe: {result['universe_size']} tickers | "
         f"Candidates: {result['candidates_found']} | "
+        f"Stale skipped: {result['stale_skipped']} | "
         f"Market open: {result['market_open']} | "
         f"Deep dive: {'yes' if result['deep_dive_ran'] else 'no (' + result['deep_dive_note'] + ')'}",
         "",
