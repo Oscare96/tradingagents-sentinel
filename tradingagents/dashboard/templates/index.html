@@ -1,0 +1,122 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>TradingAgents Scanner</title>
+<style>
+  :root { --bg:#0f1420; --card:#182032; --line:#26314a; --txt:#e8edf7; --dim:#9aa7c2;
+          --green:#3ddc84; --red:#ff6b6b; --amber:#ffc857; --blue:#5aa9ff; }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--txt);
+         font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif; }
+  header { display:flex; justify-content:space-between; align-items:center;
+           padding:16px 24px; border-bottom:1px solid var(--line); }
+  header h1 { margin:0; font-size:20px; }
+  header a { color:var(--blue); text-decoration:none; }
+  main { max-width:1000px; margin:0 auto; padding:20px 24px 60px; }
+  .cards { display:grid; grid-template-columns:repeat(auto-fit,minmax(180px,1fr)); gap:12px; margin-bottom:20px; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:10px; padding:14px 16px; }
+  .card .label { font-size:12px; color:var(--dim); text-transform:uppercase; letter-spacing:.5px; }
+  .card .value { font-size:20px; font-weight:600; margin-top:6px; }
+  .card .sub { font-size:12px; color:var(--dim); margin-top:4px; }
+  .on { color:var(--green); } .off { color:var(--dim); } .warn { color:var(--amber); } .bad { color:var(--red); }
+  .controls { background:var(--card); border:1px solid var(--line); border-radius:10px;
+              padding:16px; margin-bottom:20px; display:flex; gap:12px; align-items:center; flex-wrap:wrap; }
+  button { background:var(--blue); color:#06121f; border:0; border-radius:8px;
+           padding:10px 18px; font-size:14px; font-weight:600; cursor:pointer; }
+  button.ghost { background:transparent; color:var(--txt); border:1px solid var(--line); }
+  button.danger { background:var(--red); color:#1f0606; }
+  button:disabled { opacity:.5; cursor:default; }
+  select { background:var(--bg); color:var(--txt); border:1px solid var(--line);
+           border-radius:8px; padding:10px; font-size:14px; }
+  table { width:100%; border-collapse:collapse; background:var(--card);
+          border:1px solid var(--line); border-radius:10px; overflow:hidden; }
+  th, td { text-align:left; padding:10px 12px; border-bottom:1px solid var(--line); font-size:14px; }
+  th { color:var(--dim); font-weight:500; font-size:12px; text-transform:uppercase; letter-spacing:.5px; }
+  tr:last-child td { border-bottom:0; }
+  .sig-BUY { color:var(--green); font-weight:700; } .sig-SELL { color:var(--red); font-weight:700; }
+  .sig-HOLD { color:var(--amber); font-weight:700; }
+  h2 { font-size:16px; margin:24px 0 10px; }
+  .empty { color:var(--dim); padding:20px; text-align:center; }
+  #err { color:var(--red); font-size:13px; margin-top:8px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>📡 TradingAgents Scanner</h1>
+  <a href="/settings">⚙️ API Keys</a>
+</header>
+<main>
+  <div class="cards" id="cards"></div>
+
+  <div class="controls">
+    <select id="interval">
+      <option value="5">every 5 min</option>
+      <option value="15" selected>every 15 min</option>
+      <option value="30">every 30 min</option>
+      <option value="60">every 60 min</option>
+    </select>
+    <button id="toggle">Start scanner</button>
+    <button id="now" class="ghost">Run scan now</button>
+    <span id="err"></span>
+  </div>
+
+  <h2>Latest watchlist <span id="scan-time" style="color:var(--dim);font-weight:400"></span></h2>
+  <div id="watchlist"></div>
+</main>
+<script>
+async function jget(u){ const r = await fetch(u); return r.json(); }
+async function jpost(u, body){
+  const r = await fetch(u, {method:"POST", headers:{"Content-Type":"application/json"},
+    body: JSON.stringify(body||{})});
+  return r.json();
+}
+function pill(ok, tOn, tOff){ return ok ? `<span class="on">● ${tOn}</span>` : `<span class="off">● ${tOff}</span>`; }
+
+async function refresh(){
+  const s = await jget("/api/status");
+  document.getElementById("interval").value = String(s.interval_min);
+  const t = document.getElementById("toggle");
+  t.textContent = s.scanner_running ? "Stop scanner" : "Start scanner";
+  t.className = s.scanner_running ? "danger" : "";
+  document.getElementById("err").textContent = s.last_error ? ("Scan error: " + s.last_error) : "";
+  const ls = s.last_scan;
+  document.getElementById("cards").innerHTML = `
+    <div class="card"><div class="label">Scanner</div><div class="value">${pill(s.scanner_running, "ON", "OFF")}</div>
+      <div class="sub">${s.scanning ? "scan in progress…" : "every " + s.interval_min + " min"}</div></div>
+    <div class="card"><div class="label">Market</div><div class="value">${pill(s.market_open, "OPEN", "CLOSED")}</div>
+      <div class="sub">US equities (ET)</div></div>
+    <div class="card"><div class="label">Deep dive (LLM)</div>
+      <div class="value">${s.llm.ok ? '<span class="on">● Ready</span>' : '<span class="warn">● Screen-only</span>'}</div>
+      <div class="sub">${s.llm.ok ? "full agent analysis" : "connect an OpenAI key"}</div></div>
+    <div class="card"><div class="label">Alpaca</div>
+      <div class="value">${pill(s.alpaca_connected, "Connected", "Not connected")}</div>
+      <div class="sub">stored for the trading bot</div></div>
+    <div class="card"><div class="label">Last scan</div>
+      <div class="value">${ls ? new Date(ls.scanned_at).toLocaleTimeString() : "—"}</div>
+      <div class="sub">${ls ? ls.candidates_found + " candidates / " + ls.universe_size + " scanned" : "no scans yet"}</div></div>`;
+
+  const w = await jget("/api/watchlist");
+  const box = document.getElementById("watchlist");
+  document.getElementById("scan-time").textContent = w.scanned_at ? ("— " + new Date(w.scanned_at).toLocaleString()) : "";
+  if (!w.watchlist.length){ box.innerHTML = `<div class="empty">No candidates yet. Hit "Run scan now".</div>`; return; }
+  box.innerHTML = `<table><tr><th>Ticker</th><th>Score</th><th>Price</th><th>Day %</th><th>Rel vol</th><th>RSI</th><th>Signal</th><th>Why</th></tr>` +
+    w.watchlist.map(x => `<tr><td><b>${x.ticker}</b></td><td>${x.score}</td>
+      <td>$${x.facts.last ?? "—"}</td><td>${x.facts.pct_change ?? "—"}%</td>
+      <td>${x.facts.rel_vol ?? "—"}x</td><td>${x.facts.rsi ?? "—"}</td>
+      <td class="sig-${x.signal || ""}">${x.signal || (x.deep_dive ? "…" : "—")}</td>
+      <td style="max-width:280px">${(x.reasons||[]).join("; ")}</td></tr>`).join("") + `</table>`;
+}
+document.getElementById("toggle").onclick = async () => {
+  const s = await jget("/api/status");
+  if (s.scanner_running) await jpost("/api/scanner/stop");
+  else await jpost("/api/scanner/start", {interval_min: +document.getElementById("interval").value});
+  refresh();
+};
+document.getElementById("now").onclick = async () => { await jpost("/api/scan/now"); refresh(); };
+refresh();
+setInterval(refresh, 15000);
+</script>
+</body>
+</html>

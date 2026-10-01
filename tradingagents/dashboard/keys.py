@@ -1,0 +1,92 @@
+"""Local API-key storage.
+
+Keys live in ``~/.config/tradingagents-scanner/keys.env`` (file mode 600,
+readable only by you) and are loaded into ``os.environ`` when the dashboard
+starts, so the scanner picks them up without any code changes.
+
+Security rules:
+- Keys are never logged and never printed.
+- The API only ever returns masked versions (last 4 chars).
+- This file is outside the repo, so keys can never be committed to git.
+"""
+
+from __future__ import annotations
+
+import logging
+import os
+from pathlib import Path
+
+logger = logging.getLogger(__name__)
+
+CONFIG_DIR = Path.home() / ".config" / "tradingagents-scanner"
+KEYS_FILE = CONFIG_DIR / "keys.env"
+
+# Dashboard form field -> env var
+KEY_MAP = {
+    "alpaca_key": "APCA_API_KEY_ID",
+    "alpaca_secret": "APCA_API_SECRET_KEY",
+    "openai_key": "OPENAI_API_KEY",
+}
+
+
+def _ensure_perms() -> None:
+    CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+    if KEYS_FILE.exists():
+        os.chmod(KEYS_FILE, 0o600)
+
+
+def load_keys_into_env() -> dict[str, bool]:
+    """Read the keys file and export into os.environ. Returns presence map."""
+    _ensure_perms()
+    present: dict[str, bool] = {}
+    if KEYS_FILE.exists():
+        for line in KEYS_FILE.read_text().splitlines():
+            line = line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            k, v = line.split("=", 1)
+            k, v = k.strip(), v.strip()
+            if k and v:
+                os.environ[k] = v
+    for field, env in KEY_MAP.items():
+        present[field] = bool(os.environ.get(env))
+    return present
+
+
+def save_keys(values: dict[str, str]) -> dict[str, bool]:
+    """Save the provided keys (empty strings are ignored, existing kept)."""
+    _ensure_perms()
+    current: dict[str, str] = {}
+    if KEYS_FILE.exists():
+        for line in KEYS_FILE.read_text().splitlines():
+            if "=" in line and not line.strip().startswith("#"):
+                k, v = line.split("=", 1)
+                current[k.strip()] = v.strip()
+    for field, env in KEY_MAP.items():
+        val = (values.get(field) or "").strip()
+        if val:
+            current[env] = val
+            os.environ[env] = val
+            logger.info("Updated stored key %s", env)
+    lines = ["# TradingAgents scanner API keys -- DO NOT SHARE OR COMMIT\n"]
+    for env in KEY_MAP.values():
+        if env in current:
+            lines.append(f"{env}={current[env]}")
+    KEYS_FILE.write_text("\n".join(lines) + "\n")
+    os.chmod(KEYS_FILE, 0o600)
+    return {field: bool(os.environ.get(env)) for field, env in KEY_MAP.items()}
+
+
+def masked(field: str) -> str | None:
+    """Masked display value, e.g. '••••abcd'. None if not set."""
+    val = os.environ.get(KEY_MAP[field], "")
+    if not val:
+        return None
+    return "•" * 8 + val[-4:]
+
+
+def key_status() -> dict[str, dict]:
+    return {
+        field: {"connected": bool(os.environ.get(env)), "masked": masked(field)}
+        for field, env in KEY_MAP.items()
+    }

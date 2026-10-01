@@ -1,0 +1,92 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>API Keys — TradingAgents Scanner</title>
+<style>
+  :root { --bg:#0f1420; --card:#182032; --line:#26314a; --txt:#e8edf7; --dim:#9aa7c2;
+          --green:#3ddc84; --blue:#5aa9ff; }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--txt);
+         font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif; }
+  header { display:flex; justify-content:space-between; align-items:center;
+           padding:16px 24px; border-bottom:1px solid var(--line); }
+  header h1 { margin:0; font-size:20px; } header a { color:var(--blue); text-decoration:none; }
+  main { max-width:560px; margin:0 auto; padding:24px; }
+  .field { background:var(--card); border:1px solid var(--line); border-radius:10px;
+           padding:16px; margin-bottom:14px; }
+  .field label { display:block; font-size:13px; color:var(--dim); margin-bottom:6px;
+                 text-transform:uppercase; letter-spacing:.5px; }
+  .field input { width:100%; background:var(--bg); color:var(--txt);
+                 border:1px solid var(--line); border-radius:8px; padding:10px; font-size:14px; }
+  .row { display:flex; justify-content:space-between; align-items:center; margin-bottom:6px; }
+  .status { font-size:13px; } .ok { color:var(--green); } .missing { color:var(--dim); }
+  .masked { font-family:monospace; font-size:13px; color:var(--dim); }
+  .hint { font-size:12px; color:var(--dim); margin-top:6px; }
+  button { background:var(--blue); color:#06121f; border:0; border-radius:8px;
+           padding:12px 24px; font-size:15px; font-weight:600; cursor:pointer; width:100%; }
+  #msg { margin-top:12px; font-size:14px; text-align:center; }
+  .note { margin-top:24px; font-size:12px; color:var(--dim); line-height:1.6;
+          border-top:1px solid var(--line); padding-top:16px; }
+</style>
+</head>
+<body>
+<header><h1>⚙️ API Keys</h1><a href="/">← Dashboard</a></header>
+<main>
+  <div class="field">
+    <div class="row"><label>Alpaca API key</label>
+      <span class="status" id="s-alpaca_key"></span></div>
+    <input type="password" id="alpaca_key" placeholder="Paste new key to replace" autocomplete="off">
+    <div class="masked" id="m-alpaca_key"></div>
+    <div class="hint">Paper-trading key from alpaca.markets. Stored for the trading bot — the scanner itself never places trades.</div>
+  </div>
+  <div class="field">
+    <div class="row"><label>Alpaca secret key</label>
+      <span class="status" id="s-alpaca_secret"></span></div>
+    <input type="password" id="alpaca_secret" placeholder="Paste new secret to replace" autocomplete="off">
+    <div class="masked" id="m-alpaca_secret"></div>
+  </div>
+  <div class="field">
+    <div class="row"><label>OpenAI API key</label>
+      <span class="status" id="s-openai_key"></span></div>
+    <input type="password" id="openai_key" placeholder="Paste new key to replace" autocomplete="off">
+    <div class="masked" id="m-openai_key"></div>
+    <div class="hint">Powers the deep-dive: full agent analysis (analysts → debate → trader → risk → portfolio manager) on top scan candidates.</div>
+  </div>
+  <button id="save">Save keys</button>
+  <div id="msg"></div>
+  <div class="note">
+    Keys are stored only on this machine in <code>~/.config/tradingagents-scanner/keys.env</code>
+    (readable by you alone), loaded as environment variables for the scanner, and never logged or
+    shown in full. Leave a field blank to keep the existing value.
+  </div>
+</main>
+<script>
+const FIELDS = ["alpaca_key", "alpaca_secret", "openai_key"];
+function render(ks){
+  for (const f of FIELDS){
+    const el = document.getElementById("s-" + f), m = document.getElementById("m-" + f);
+    if (ks[f].connected){
+      el.innerHTML = '<span class="ok">● connected</span>';
+      m.textContent = "current: " + ks[f].masked;
+    } else {
+      el.innerHTML = '<span class="missing">○ not set</span>';
+      m.textContent = "";
+    }
+  }
+}
+render({{ keys | tojson }});
+document.getElementById("save").onclick = async () => {
+  const body = {}; for (const f of FIELDS) body[f] = document.getElementById(f).value;
+  const r = await fetch("/api/keys", {method:"POST",
+    headers:{"Content-Type":"application/json"}, body: JSON.stringify(body)});
+  const d = await r.json();
+  render(d.keys);
+  for (const f of FIELDS) document.getElementById(f).value = "";
+  document.getElementById("msg").innerHTML = '<span class="ok">Saved ✓</span>';
+  setTimeout(() => document.getElementById("msg").textContent = "", 3000);
+};
+</script>
+</body>
+</html>
