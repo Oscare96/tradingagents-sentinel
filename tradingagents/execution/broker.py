@@ -105,6 +105,20 @@ class AlpacaPaperBroker:
     def get_open_orders(self) -> list:
         return self._paper("GET", "/v2/orders", params={"status": "open", "limit": 500})
 
+    def get_orders(self, status: str = "all", limit: int = 500) -> list:
+        """Order history. status: open | closed | all. Used for fill
+        reconciliation and crash recovery (never for signal generation)."""
+        return self._paper("GET", "/v2/orders",
+                           params={"status": status, "limit": limit,
+                                   "direction": "desc"})
+
+    def get_portfolio_history(self, period: str = "1D") -> dict:
+        """Equity time series. For period=1D, ``base_value`` is the equity
+        at the start of the period -- used to reconstruct day-start equity
+        when local state is lost."""
+        return self._paper("GET", "/v2/account/portfolio/history",
+                           params={"period": period})
+
     def get_clock(self) -> dict:
         return self._paper("GET", "/v2/clock")
 

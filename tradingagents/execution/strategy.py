@@ -43,7 +43,8 @@ def generate_intents(candidates: list,
             break
         symbol = c.get("ticker")
         score = c.get("score", 0)
-        price = (c.get("facts") or {}).get("last")
+        facts = c.get("facts") or {}
+        price = facts.get("last")
         if not symbol or symbol in seen:
             continue
         seen.add(symbol)
@@ -66,5 +67,6 @@ def generate_intents(candidates: list,
             strategy_version=cfg.STRATEGY_VERSION,
             client_order_id=build_client_order_id(
                 date_str, symbol, "buy", cfg.STRATEGY_VERSION, n),
+            price_asof=facts.get("price_asof"),
         ))
     return intents

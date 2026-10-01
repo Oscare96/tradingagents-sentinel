@@ -67,26 +67,42 @@ cycle (never cached across cycles).
 Every entry is submitted as an **Alpaca bracket order**:
 
 - Entry: market (long).
-- Stop-loss: stop order at 4% below the entry fill price.
-- Take-profit: limit order at 8% above the entry fill price.
+- Stop-loss: stop order at 4% below the pre-submit quote.
+- Take-profit: limit order at 8% above the pre-submit quote.
 
 Brackets are held by the broker, so exits survive bot restarts. The 4%/8%
 values are a conventional starting point, not a validated edge.
 
-Additionally, the trader closes positions at 15:45 ET each day
-(end-of-day flatten; no overnight holds in v1 — removes gap risk from the
-validation).
+Honest note on price anchoring: the legs are computed from the fresh quote
+fetched seconds before submission (which the drift guard caps at 2% from
+the scan reference), not from the actual fill price. A market order's fill
+lands at essentially that quote, so the anchor is within cents of the true
+cost basis. The alternative — submitting the entry naked and attaching the
+legs after the fill — was rejected because it leaves the position
+unprotected during the fill wait and adds failure modes. True
+fill-anchored legs are future work.
+
+Additionally, the trader flattens everything **15 minutes before the
+regular-session close** (session-aware: early-close days move the cutoff;
+no overnight holds in v1 — removes gap risk from the validation). Past
+the cutoff, new entries are blocked even with an empty account: the bot
+never enters into the close.
 
 ## 5. Daily loss limit and kill switch (SAFETY)
 
 - Day start equity is recorded at the first cycle of each trading day.
 - If intraday P&L falls to **-2% of day-start equity**: kill switch trips —
-  cancel all open orders, liquidate all positions, and disable new entries
-  for the rest of the day. The trip is written to the ledger and requires no
-  human action to trigger, but only Oscar re-enables trading (a `kill`
-  flag file; the trader refuses to run while it exists).
-- The kill switch also trips on: account state unreachable, positions
-  irreconcilable with the ledger, or 3 consecutive order rejections.
+  cancel all open orders, liquidate all positions. The trip is written to
+  the ledger and requires no human action to trigger, but only Oscar
+  re-enables trading (a `kill` flag file).
+- The kill switch also trips on: 3 consecutive order-submission failures,
+  or a failed end-of-day flatten.
+- **While the kill flag exists, every cycle keeps retrying emergency
+  cleanup (cancel + liquidate) until the broker confirms the account is
+  flat.** Entries stay blocked the whole time. A failed liquidation is
+  therefore never abandoned after one attempt.
+- Only Oscar clears the flag (delete the `kill` file in the ledger root)
+  after reviewing what happened.
 
 ## 6. Duplicate and conflict prevention (SAFETY)
 
@@ -104,23 +120,44 @@ validation).
 ## 7. Stale-data and calendar rules (SAFETY)
 
 - No entries when the market is closed (checked via the NYSE calendar).
-- No entries when the scan's candidates are stale (the screens already drop
-  tickers whose latest bar predates the expected session; the trader
-  additionally requires the scan's `trade_date` to be today).
+- No entries on a stale scan: the scan's `trade_date` must be today, its
+  `scanned_at` must be within 30 minutes, and each candidate's `price_asof`
+  must be within 30 minutes. A missing or unparsable timestamp fails
+  closed (treated as stale).
+- No entries past the session-aware EOD cutoff (15 min before close),
+  regardless of positions held.
 - No entries when any of account / positions / clock is unreachable —
   fail closed, log, retry next cycle.
 
-## 8. Ledger and audit
+## 8. Ledger, fills, and audit
 
 - Every decision is appended to `reports/execution/YYYY-MM-DD.jsonl`:
   intent, risk-check pass/fail with reasons, submitted order (with
   client_order_id), fills, cancels, rejects, stop/target fills, kill-switch
   trips, reconciliation results.
-- Realized and unrealized P&L are computed from fills and broker quotes and
-  reported per cycle; the dashboard (later) reads the ledger, never the
-  other way around.
+- **State loss never resets limits silently.** If `state.json` is
+  unreadable, the trader rebuilds the daily entry count from today's
+  filled buy orders and day-start equity from the portfolio history's
+  base value. If broker history is unavailable, entries are blocked
+  (management — kill checks, EOD flatten, reconciliation — keeps running)
+  until a human resets state.
+- **Fill reconciliation runs every cycle**: closed orders are matched
+  against submitted `client_order_id`s; entry fills, exit-leg fills, and
+  partial fills are recorded. Realized P&L is computed from fills
+  (FIFO per symbol) and reported per cycle; unrealized P&L comes from
+  broker quotes. The dashboard (later) reads the ledger, never the other
+  way around.
 
-## 9. What this spec does NOT promise
+## 9. Scheduler wiring
+
+- The scanner service hands each scan result to `run_trading_cycle()`
+  only when `EXEC_TRADING_ENABLED=1` **and** Alpaca paper keys are
+  present. Default is off; a trading error is logged and never breaks the
+  scan loop.
+- Enabling unattended trading requires Oscar's explicit approval after
+  the paper smoke test and risk-parameter review.
+
+## 10. What this spec does NOT promise
 
 - No profitability claim. Paper validation exists to *measure*, not to
   prove.
@@ -128,3 +165,6 @@ validation).
   no pre/after-hours trading in v1.
 - Backtests of recommendations are not backtests of this system. A real
   event-driven simulator is future work, not part of v1.
+- Async broker-side rejections (an order accepted at submit, rejected
+  later) are observed in reconciliation but do not yet count toward the
+  3-rejection kill switch — submit-time failures do.

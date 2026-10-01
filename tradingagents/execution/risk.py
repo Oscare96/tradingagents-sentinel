@@ -39,6 +39,7 @@ class Intent:
     quote_price: float  # fresh quote, checked for drift
     strategy_version: str
     client_order_id: str
+    price_asof: str | None = None  # ISO timestamp of the scan bar behind this intent
 
 
 def size_position(equity: float, reference_price: float, target_pct: float) -> int:

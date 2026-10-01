@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import threading
 from pathlib import Path
 
@@ -123,8 +124,9 @@ class ScannerService:
                 logger.info("Scan already in progress, skipping")
                 return
             self.scanning = True
+        result = None
         try:
-            run_scan()
+            result = run_scan()
             self.last_error = None
         except Exception as exc:
             self.last_error = str(exc)
@@ -132,3 +134,32 @@ class ScannerService:
         finally:
             with self._lock:
                 self.scanning = False
+        self._maybe_trade(result)
+
+    def _maybe_trade(self, scan_result: dict | None) -> None:
+        """Hand the scan to the paper-trading cycle when enabled.
+
+        Gated by EXEC_TRADING_ENABLED=1 and the presence of Alpaca paper
+        keys. A trading failure is logged and never breaks the scan loop.
+        Default is off: enabling unattended trading needs Oscar's explicit
+        approval after the paper smoke test and risk-parameter review.
+        """
+        from tradingagents.execution import config as exc_cfg
+
+        if not exc_cfg.EXEC_TRADING_ENABLED:
+            return
+        if not (os.environ.get(exc_cfg.APCA_KEY_ENV)
+                and os.environ.get(exc_cfg.APCA_SECRET_ENV)):
+            logger.debug("Trading enabled but Alpaca paper keys missing; skipping")
+            return
+        try:
+            from tradingagents.execution import trader as trader_mod
+            from tradingagents.execution.broker import AlpacaPaperBroker
+            from tradingagents.execution.ledger import Ledger
+
+            summary = trader_mod.run_trading_cycle(
+                scan_result, AlpacaPaperBroker(), Ledger())
+            logger.info("Trading cycle complete: %d actions",
+                        len(summary.get("actions", [])))
+        except Exception:
+            logger.exception("Trading cycle failed")

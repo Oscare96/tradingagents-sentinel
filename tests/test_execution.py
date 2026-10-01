@@ -15,7 +15,7 @@ from tradingagents.execution import config as cfg
 from tradingagents.execution.broker import (
     AlpacaPaperBroker, BrokerAuthError, BrokerError,
 )
-from tradingagents.execution.ledger import Ledger
+from tradingagents.execution.ledger import Ledger, StateCorruptError
 from tradingagents.execution.risk import (
     Intent, Position, RiskState, bracket_prices, daily_pnl_pct, find_orphans,
     gross_exposure_pct, kill_switch_tripped, size_position, validate_intent,
@@ -173,13 +173,13 @@ def test_short_side_rejects():
 
 
 # ---------------------------------------------------------------- strategy
-def _cand(ticker, score, last):
+def _strat_cand(ticker, score, last):
     return {"ticker": ticker, "score": score, "facts": {"last": last}}
 
 
 def test_strategy_picks_best_candidate_above_bar():
-    cands = [_cand("BBB", 5.0, 50.0), _cand("AAA", 7.5, 100.0),
-             _cand("CCC", 9.0, 20.0)]
+    cands = [_strat_cand("BBB", 5.0, 50.0), _strat_cand("AAA", 7.5, 100.0),
+             _strat_cand("CCC", 9.0, 20.0)]
     intents = strat.generate_intents(cands, 100_000, set(), set(), "2026-10-01")
     assert len(intents) == 1
     assert intents[0].symbol == "CCC"  # highest score first
@@ -187,14 +187,14 @@ def test_strategy_picks_best_candidate_above_bar():
 
 
 def test_strategy_skips_below_bar_held_and_ordered():
-    cands = [_cand("LOW", 4.0, 10.0), _cand("HELD", 8.0, 10.0),
-             _cand("ORD", 8.0, 10.0)]
+    cands = [_strat_cand("LOW", 4.0, 10.0), _strat_cand("HELD", 8.0, 10.0),
+             _strat_cand("ORD", 8.0, 10.0)]
     intents = strat.generate_intents(cands, 100_000, {"HELD"}, {"ORD"}, "2026-10-01")
     assert intents == []
 
 
 def test_strategy_respects_max_new_per_day():
-    cands = [_cand("A", 8.0, 10.0), _cand("B", 8.0, 10.0)]
+    cands = [_strat_cand("A", 8.0, 10.0), _strat_cand("B", 8.0, 10.0)]
     intents = strat.generate_intents(cands, 100_000, set(), set(),
                                      "2026-10-01", max_new=1)
     assert len(intents) == 1
@@ -339,10 +339,13 @@ class FakeBroker:
     """In-memory stand-in for AlpacaPaperBroker."""
 
     def __init__(self, equity=100_000.0, positions=None, orders=None,
-                 quotes=None, fail_on=None):
+                 quotes=None, fail_on=None, closed_orders=None,
+                 base_value=None):
         self.equity = equity
         self.positions = positions or {}   # symbol -> dict(qty, market_value)
         self.orders = orders or []         # open orders
+        self.closed_orders = closed_orders or []  # order history (closed)
+        self.base_value = base_value       # portfolio history base_value
         self.quotes = quotes or {}
         self.fail_on = fail_on or set()
         self.submitted = []
@@ -367,6 +370,18 @@ class FakeBroker:
     def get_open_orders(self):
         return self.orders
 
+    def get_orders(self, status="all", limit=500):
+        self._maybe_fail("orders")
+        if status == "closed":
+            return self.closed_orders
+        return self.orders + self.closed_orders
+
+    def get_portfolio_history(self, period="1D"):
+        self._maybe_fail("history")
+        return {"base_value": self.base_value if self.base_value is not None
+                else self.equity,
+                "equity": [], "timestamp": []}
+
     def get_latest_ask(self, symbol):
         if symbol not in self.quotes:
             raise BrokerError(f"no quote for {symbol}")
@@ -385,11 +400,13 @@ class FakeBroker:
         return order
 
     def cancel_all_orders(self):
-        self.cancelled_all += 1
+        self.cancelled_all += 1  # attempts, even if the call then fails
+        self._maybe_fail("cancel")
         self.orders = []
 
     def close_all_positions(self):
-        self.closed_all += 1
+        self.closed_all += 1  # attempts, even if the call then fails
+        self._maybe_fail("close")
         self.positions = {}
 
 
@@ -397,8 +414,14 @@ def _noon(day="2026-10-01"):
     return ET.localize(datetime(2026, 10, 1, 12, 0))
 
 
-def _scan(trade_date="2026-10-01", cands=None):
-    return {"trade_date": trade_date,
+def _cand(ticker, score, last, price_asof="2026-10-01T12:00:00-04:00"):
+    return {"ticker": ticker, "score": score,
+            "facts": {"last": last, "price_asof": price_asof}}
+
+
+def _scan(trade_date="2026-10-01", cands=None,
+          scanned_at="2026-10-01T12:00:00-04:00"):
+    return {"trade_date": trade_date, "scanned_at": scanned_at,
             "watchlist": cands if cands is not None
             else [_cand("AAA", 8.0, 100.0)]}
 
@@ -410,7 +433,8 @@ def test_cycle_submits_one_bracket(tmp_path):
     assert len(broker.submitted) == 1
     order = broker.submitted[0]
     assert order["symbol"] == "AAA" and order["qty"] == "20"
-    assert order["stop_price"] == 96.0 and order["take_profit_price"] == 108.0
+    # Legs anchor to the fresh pre-submit quote (100.5), not the scan price.
+    assert order["stop_price"] == 96.48 and order["take_profit_price"] == 108.54
     assert any(a["action"] == "order_submitted" for a in out["actions"])
     state = led.load_state()
     assert state["new_positions_today"] == 1
@@ -436,10 +460,13 @@ def test_kill_switch_trips_on_daily_loss(tmp_path):
     out = trader_mod.run_trading_cycle(_scan(cands=[]), broker, led, now=_noon())
     assert led.kill_engaged()
     assert broker.cancelled_all == 1 and broker.closed_all == 1
-    # Next cycle is blocked until a human clears the flag.
+    # Next cycle keeps retrying emergency cleanup until the broker confirms
+    # flat; entries stay blocked until a human clears the flag.
     broker2 = FakeBroker(quotes={"AAA": 100.0})
     out2 = trader_mod.run_trading_cycle(_scan(), broker2, led, now=_noon())
-    assert any(a["action"] == "cycle_blocked" for a in out2["actions"])
+    assert any(a["action"] == "kill_switch_flat_confirmed"
+               for a in out2["actions"])
+    assert not any(a["action"] == "order_submitted" for a in out2["actions"])
     assert broker2.submitted == []
 
 
@@ -498,4 +525,222 @@ def test_submit_failure_does_not_retry_blindly(tmp_path):
     broker = FakeBroker(quotes={"AAA": 100.0}, fail_on={"submit"})
     out = trader_mod.run_trading_cycle(_scan(), broker, led, now=_noon())
     assert broker.submitted == []
+    assert led.load_state()["consecutive_rejections"] == 1
+    assert not led.kill_engaged()  # single failure does not trip the kill
     assert any(a["action"] == "order_failed" for a in out["actions"])
+
+
+# ------------------------------------------- regression: Oct 1 safety review
+def test_no_entry_after_cutoff_with_empty_account(tmp_path):
+    """Review finding 1: the old flatten branch skipped empty accounts,
+    leaving the entry path open at 15:50. Past the cutoff, entries are
+    blocked even with nothing to flatten."""
+    led = Ledger(root=tmp_path)
+    broker = FakeBroker(quotes={"AAA": 100.0})
+    late = ET.localize(datetime(2026, 10, 1, 15, 50))
+    out = trader_mod.run_trading_cycle(_scan(), broker, led, now=late)
+    assert broker.submitted == []
+    assert any(a["action"] == "past_eod_cutoff" for a in out["actions"])
+
+
+def test_early_close_moves_cutoff(tmp_path, monkeypatch):
+    """Review finding 1b: on a 13:00 ET early close the cutoff is 12:45,
+    not 15:45."""
+    led = Ledger(root=tmp_path)
+    broker = FakeBroker(quotes={"AAA": 100.0})
+    monkeypatch.setattr(trader_mod, "session_close",
+                        lambda now: ET.localize(datetime(2026, 10, 1, 13, 0)))
+    late = ET.localize(datetime(2026, 10, 1, 12, 50))
+    out = trader_mod.run_trading_cycle(_scan(), broker, led, now=late)
+    assert broker.submitted == []
+    assert any(a["action"] == "past_eod_cutoff" for a in out["actions"])
+
+
+def test_kill_switch_retries_failed_liquidation(tmp_path):
+    """Review finding 2: a failed liquidation is retried every cycle until
+    the broker confirms flat -- never abandoned after one attempt."""
+    led = Ledger(root=tmp_path)
+    broker = FakeBroker(equity=100_000.0, quotes={"AAA": 100.0},
+                        positions={"AAA": {"qty": 20, "market_value": 2_000.0}},
+                        fail_on={"close"})
+    trader_mod.run_trading_cycle(_scan(cands=[]), broker, led, now=_noon())
+    broker.equity = 97_000.0  # -3% -> trip, but the close fails
+    trader_mod.run_trading_cycle(_scan(cands=[]), broker, led, now=_noon())
+    assert led.kill_engaged()
+    assert broker.closed_all == 1
+    assert "AAA" in broker.positions  # still open: the close failed
+
+    # Cycle 2: kill engaged -> cleanup retried, still failing.
+    out2 = trader_mod.run_trading_cycle(_scan(), broker, led, now=_noon())
+    assert broker.closed_all == 2
+    assert any(a["action"] == "kill_switch_cleanup_failed"
+               for a in out2["actions"])
+    assert broker.submitted == []  # entries stay blocked
+
+    # Cycle 3: broker recovers -> cleanup succeeds, flat confirmed.
+    broker.fail_on = set()
+    out3 = trader_mod.run_trading_cycle(_scan(), broker, led, now=_noon())
+    assert broker.closed_all == 3
+    assert any(a["action"] == "kill_switch_flat_confirmed"
+               for a in out3["actions"])
+    assert broker.submitted == []  # still blocked: human clears the flag
+
+
+def test_corrupt_state_raises_instead_of_resetting(tmp_path):
+    led = Ledger(root=tmp_path)
+    (tmp_path / "state.json").write_text("{nope")
+    with pytest.raises(StateCorruptError):
+        led.load_state()
+
+
+def test_corrupt_state_reconstructs_from_broker(tmp_path):
+    """Review finding 3: unreadable state.json rebuilds limits from broker
+    history instead of resetting them."""
+    led = Ledger(root=tmp_path)
+    (tmp_path / "state.json").write_text("{not valid json")
+    broker = FakeBroker(
+        quotes={"AAA": 100.0},
+        closed_orders=[{"id": "o1", "symbol": "AAA", "side": "buy",
+                        "status": "filled", "filled_qty": "20",
+                        "filled_avg_price": "100.0",
+                        "filled_at": "2026-10-01T14:00:00Z",
+                        "client_order_id": "sentinel-20261001-AAA-buy-v1-1"}],
+        base_value=99_000.0)
+    out = trader_mod.run_trading_cycle(_scan(cands=[]), broker, led, now=_noon())
+    assert any(a["action"] == "state_reconstructed" for a in out["actions"])
+    state = led.load_state()
+    assert state["new_positions_today"] == 1
+    assert state["day_start_equity"] == 99_000.0
+
+
+def test_corrupt_state_blocks_entries_when_history_unavailable(tmp_path):
+    """Review finding 3b: if broker history is also unavailable, fail closed
+    (entries blocked, management continues) instead of resetting limits."""
+    led = Ledger(root=tmp_path)
+    (tmp_path / "state.json").write_text("{not valid json")
+    broker = FakeBroker(quotes={"AAA": 100.0}, fail_on={"orders", "history"})
+    out = trader_mod.run_trading_cycle(_scan(), broker, led, now=_noon())
+    assert broker.submitted == []
+    assert any(a["action"] == "entries_blocked" for a in out["actions"])
+
+
+def test_stale_scan_age_blocks_entries(tmp_path):
+    """Review finding 4: a two-hour-old scan on the same trade_date must not
+    trade."""
+    led = Ledger(root=tmp_path)
+    broker = FakeBroker(quotes={"AAA": 100.0})
+    out = trader_mod.run_trading_cycle(
+        _scan(scanned_at="2026-10-01T10:00:00-04:00"), broker, led, now=_noon())
+    assert broker.submitted == []
+    skipped = [a for a in out["actions"] if a["action"] == "entries_skipped"]
+    assert skipped and any("120 min old" in r for r in skipped[0]["reasons"])
+
+
+def test_stale_price_asof_rejects_intent(tmp_path):
+    """Review finding 4b: candidate prices older than the cap are rejected."""
+    led = Ledger(root=tmp_path)
+    broker = FakeBroker(quotes={"AAA": 100.0})
+    scan = _scan(cands=[_cand("AAA", 8.0, 100.0,
+                              price_asof="2026-10-01T10:00:00-04:00")])
+    out = trader_mod.run_trading_cycle(scan, broker, led, now=_noon())
+    assert broker.submitted == []
+    rejected = [a for a in out["actions"] if a["action"] == "intent_rejected"]
+    assert rejected and any("price_asof" in r for r in rejected[0]["reasons"])
+
+
+def test_three_consecutive_rejections_trip_kill(tmp_path):
+    """Review finding 5a: the documented 3-rejection kill switch now trips."""
+    led = Ledger(root=tmp_path)
+    broker = FakeBroker(quotes={"AAA": 100.0}, fail_on={"submit"})
+    for _ in range(3):
+        trader_mod.run_trading_cycle(_scan(), broker, led, now=_noon())
+    assert led.kill_engaged()
+    assert broker.cancelled_all >= 1  # emergency cleanup ran on the trip
+    assert led.load_state()["consecutive_rejections"] == 3
+
+
+def test_fill_reconciliation_records_fills(tmp_path):
+    """Review finding 5b: closed orders matching our submissions are
+    recorded as fills."""
+    led = Ledger(root=tmp_path)
+    broker = FakeBroker(quotes={"AAA": 100.0})
+    trader_mod.run_trading_cycle(_scan(), broker, led, now=_noon())
+    cid = broker.submitted[0]["client_order_id"]
+    broker.closed_orders = [{"id": "bo-0", "symbol": "AAA", "side": "buy",
+                             "status": "filled", "filled_qty": "20",
+                             "filled_avg_price": "100.4",
+                             "filled_at": "2026-10-01T16:05:00Z",
+                             "client_order_id": cid}]
+    out = trader_mod.run_trading_cycle(_scan(cands=[]), broker, led, now=_noon())
+    fills = led.fills("2026-10-01")
+    assert len(fills) == 1
+    assert fills[0]["price"] == 100.4 and fills[0]["qty"] == 20
+    assert any(a["action"] == "fill" for a in out["actions"])
+
+
+def test_partial_fill_is_flagged(tmp_path):
+    led = Ledger(root=tmp_path)
+    broker = FakeBroker(quotes={"AAA": 100.0})
+    trader_mod.run_trading_cycle(_scan(), broker, led, now=_noon())
+    cid = broker.submitted[0]["client_order_id"]
+    broker.closed_orders = [{"id": "bo-0", "symbol": "AAA", "side": "buy",
+                             "status": "filled", "filled_qty": "12",
+                             "filled_avg_price": "100.4",
+                             "filled_at": "2026-10-01T16:05:00Z",
+                             "client_order_id": cid}]
+    out = trader_mod.run_trading_cycle(_scan(cands=[]), broker, led, now=_noon())
+    partials = [a for a in out["actions"] if a["action"] == "partial_fill"]
+    assert partials and partials[0]["qty"] == 12
+    assert partials[0]["ordered_qty"] == 20
+
+
+def test_realized_pnl_fifo_from_fills(tmp_path):
+    """Review finding 5c: realized P&L is computed from recorded fills."""
+    led = Ledger(root=tmp_path)
+    led.record("2026-10-01", "fill", symbol="AAA", side="buy", qty=20, price=100.0)
+    led.record("2026-10-01", "fill", symbol="AAA", side="buy", qty=10, price=102.0)
+    led.record("2026-10-01", "fill", symbol="AAA", side="sell", qty=25, price=108.0)
+    pnl = led.realized_pnl("2026-10-01")
+    # 20*(108-100) + 5*(108-102) = 160 + 30
+    assert pnl == {"AAA": 190.0}
+
+
+# ------------------------------------------- scheduler wiring (finding 6)
+def _svc():
+    from tradingagents.dashboard.scanner_service import ScannerService
+    return ScannerService()
+
+
+def test_maybe_trade_disabled_by_default(monkeypatch):
+    monkeypatch.setattr("tradingagents.execution.config.EXEC_TRADING_ENABLED",
+                        False)
+    called = []
+    monkeypatch.setattr("tradingagents.execution.trader.run_trading_cycle",
+                        lambda *a, **k: called.append(1))
+    _svc()._maybe_trade({"trade_date": "2026-10-01"})
+    assert called == []
+
+
+def test_maybe_trade_needs_keys(monkeypatch):
+    from tradingagents.execution import config as exc_cfg
+    monkeypatch.setattr(exc_cfg, "EXEC_TRADING_ENABLED", True)
+    monkeypatch.delenv("APCA_API_KEY_ID", raising=False)
+    monkeypatch.delenv("APCA_API_SECRET_KEY", raising=False)
+    called = []
+    monkeypatch.setattr("tradingagents.execution.trader.run_trading_cycle",
+                        lambda *a, **k: called.append(1))
+    _svc()._maybe_trade({"trade_date": "2026-10-01"})
+    assert called == []
+
+
+def test_maybe_trade_calls_cycle_when_enabled_with_keys(monkeypatch):
+    from tradingagents.execution import config as exc_cfg
+    monkeypatch.setattr(exc_cfg, "EXEC_TRADING_ENABLED", True)
+    monkeypatch.setenv("APCA_API_KEY_ID", "k")
+    monkeypatch.setenv("APCA_API_SECRET_KEY", "s")
+    called = []
+    monkeypatch.setattr(
+        "tradingagents.execution.trader.run_trading_cycle",
+        lambda scan, broker, ledger: called.append(scan) or {"actions": []})
+    _svc()._maybe_trade({"trade_date": "2026-10-01"})
+    assert len(called) == 1

@@ -80,3 +80,30 @@ def expected_session_date(now: datetime | None = None):
     if past.empty:
         return None
     return past.index[-1].date()
+
+
+def session_close(now: datetime | None = None):
+    """Today's regular-session close as an ET datetime, or None if unknown.
+
+    Honors early closes (e.g. 13:00 ET) via the XNYS calendar; falls back to
+    16:00 ET on weekdays when the calendar is unavailable. Returns None on
+    weekends (no session today).
+    """
+    now = now or datetime.now(ET)
+    if now.tzinfo is None:
+        now = ET.localize(now)
+    if now.weekday() >= 5:
+        return None
+    cal = _calendar()
+    if cal is None:
+        return now.replace(hour=16, minute=0, second=0, microsecond=0)
+    try:
+        sched = cal.schedule(start_date=now.date(), end_date=now.date())
+    except Exception:
+        return None
+    if sched.empty:
+        return None
+    close = sched.iloc[0]["market_close"].to_pydatetime()
+    if close.tzinfo is None:
+        close = ET.localize(close)
+    return close

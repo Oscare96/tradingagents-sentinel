@@ -33,9 +33,20 @@ TAKE_PROFIT_PCT = 0.08
 # --- Stale-quote guard: discard intent if the fresh quote moved this far ---
 MAX_QUOTE_DRIFT_PCT = 0.02
 
-# --- Daily kill switch ---
+# --- Kill switch / EOD ---
 DAILY_LOSS_LIMIT_PCT = 0.02
-EOD_FLATTEN_ET = "15:45"          # close all positions before the bell
+EOD_FLATTEN_MIN_BEFORE_CLOSE = 15  # flatten this many minutes before session close
+MAX_REJECTIONS_BEFORE_KILL = 3    # consecutive submit failures trip the kill switch
+
+# --- Freshness ---
+MAX_SCAN_AGE_MIN = 30             # entries need a scan this fresh (scanned_at)
+MAX_PRICE_AGE_MIN = 30            # ...and candidate prices (price_asof) this fresh
+
+# --- Scheduler wiring ---
+# The scanner calls run_trading_cycle() after each scan only when this is "1".
+# Default off: enabling unattended trading needs Oscar's explicit approval
+# after the paper smoke test and risk-parameter review.
+EXEC_TRADING_ENABLED = os.environ.get("EXEC_TRADING_ENABLED", "0") == "1"
 
 # --- Ledger / state ---
 LEDGER_ROOT = "reports/execution"  # relative to the repo root
