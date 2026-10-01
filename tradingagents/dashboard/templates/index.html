@@ -91,8 +91,8 @@ async function refresh(){
       <div class="value">${s.llm.ok ? '<span class="on">● Ready</span>' : '<span class="warn">● Screen-only</span>'}</div>
       <div class="sub">${s.llm.ok ? "full agent analysis" : "connect an OpenAI key"}</div></div>
     <div class="card"><div class="label">Alpaca</div>
-      <div class="value">${pill(s.alpaca_connected, "Connected", "Not connected")}</div>
-      <div class="sub">stored for the trading bot</div></div>
+      <div class="value">${pill(s.alpaca_keys_saved, "Keys saved", "Not set")}</div>
+      <div class="sub">stored for the trading bot — not a live broker check</div></div>
     <div class="card"><div class="label">Last scan</div>
       <div class="value">${ls ? new Date(ls.scanned_at).toLocaleTimeString() : "—"}</div>
       <div class="sub">${ls ? ls.candidates_found + " candidates / " + ls.universe_size + " scanned" : "no scans yet"}</div></div>`;

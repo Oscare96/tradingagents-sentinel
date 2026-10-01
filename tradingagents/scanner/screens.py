@@ -94,20 +94,119 @@ def _px(frame: pd.DataFrame, ticker: str, field: str) -> pd.Series:
 
 
 def _rsi(close: pd.Series, period: int = 14) -> float:
+    """Wilder's RSI with standard edge handling.
+
+    A one-sided series used to collapse to 50.0 (average loss of 0 made the
+    RS ratio NaN): all-gains must read 100, all-losses 0, flat 50.
+    """
     delta = close.diff()
     gain = delta.clip(lower=0).ewm(alpha=1 / period, adjust=False).mean()
     loss = (-delta.clip(upper=0)).ewm(alpha=1 / period, adjust=False).mean()
-    rs = gain / loss.replace(0, pd.NA)
-    return float(100 - 100 / (1 + rs.iloc[-1])) if pd.notna(rs.iloc[-1]) else 50.0
+    avg_gain = float(gain.iloc[-1])
+    avg_loss = float(loss.iloc[-1])
+    if pd.isna(avg_gain) or pd.isna(avg_loss):
+        return 50.0
+    if avg_loss == 0:
+        return 100.0 if avg_gain > 0 else 50.0
+    if avg_gain == 0:
+        return 0.0
+    rs = avg_gain / avg_loss
+    return float(100 - 100 / (1 + rs))
+
+
+def _prev_session_close(d_close: pd.Series, session_date) -> float:
+    """Close of the last completed daily bar *before* the price session.
+
+    The old code blindly took ``d_close.iloc[-2]``, which is only right when
+    the daily frame's final bar is today's still-forming bar. After hours, on
+    weekends, or with a pre-market-written daily cache, the frame ends on a
+    completed day and ``iloc[-2]`` silently picks the wrong session -- e.g.
+    the day before yesterday. Anchoring to the latest intraday bar's session
+    date is correct in every case.
+    """
+    hist = d_close[d_close.index.date < session_date]
+    if hist.empty:
+        hist = d_close.iloc[:-1] if len(d_close) > 1 else d_close
+    return float(hist.iloc[-1])
+
+
+def _screen_one(
+    t: str,
+    d_close: pd.Series,
+    d_vol: pd.Series,
+    d_open: pd.Series,
+    i_close: pd.Series,
+    i_vol: pd.Series,
+    i_open: pd.Series,
+) -> Candidate | None:
+    """Score one ticker; None when it fails data/liquidity gates or no screen."""
+    if len(d_close) < 25 or i_close.empty:
+        return None
+
+    last = float(i_close.iloc[-1])
+    if last < MIN_PRICE:
+        return None
+
+    # The session the latest price belongs to (usually today, ET).
+    session_date = i_close.index[-1].date()
+    sess = i_close[i_close.index.date == session_date]
+    sess_vol = i_vol[i_vol.index.date == session_date]
+    sess_open = i_open[i_open.index.date == session_date]
+    day_volume = float(sess_vol.sum()) if not sess_vol.empty else 0.0
+    dollar_vol = day_volume * last
+    if dollar_vol < MIN_DOLLAR_VOLUME:
+        return None
+
+    prev_close = _prev_session_close(d_close, session_date)
+    if prev_close <= 0:
+        return None
+    # Gap is measured from the session's opening print, not the first
+    # 15-minute bar's close.
+    if not sess_open.empty:
+        day_open = float(sess_open.iloc[0])
+    else:
+        d_open_sess = d_open[d_open.index.date <= session_date]
+        day_open = float(d_open_sess.iloc[-1]) if not d_open_sess.empty else prev_close
+    pct_change = (last - prev_close) / prev_close * 100
+    gap_pct = (day_open - prev_close) / prev_close * 100
+
+    # Relative volume: today's pace vs the 20 completed sessions before it.
+    hist_vol = d_vol[d_vol.index.date < session_date]
+    avg_vol = float(hist_vol.iloc[-20:].mean()) if len(hist_vol) else 0.0
+    elapsed_frac = max(len(sess) / 26.0, 0.15)  # 26 fifteen-min bars/session
+    rel_vol = (day_volume / elapsed_frac) / avg_vol if avg_vol > 0 else 0.0
+
+    hi_52w = float(d_close.tail(252).max())
+    proximity = last / hi_52w * 100 if hi_52w > 0 else 0.0
+    rsi = _rsi(d_close)
+
+    c = Candidate(ticker=t)
+    c.facts.update(
+        last=round(last, 2), pct_change=round(pct_change, 2),
+        rel_vol=round(rel_vol, 2), gap_pct=round(gap_pct, 2),
+        rsi=round(rsi, 1), dollar_vol=int(dollar_vol),
+    )
+
+    if pct_change >= GAIN_PCT:
+        c.add(3.0 + pct_change / 10, f"up {pct_change:.1f}% intraday")
+    if rel_vol >= REL_VOL:
+        c.add(2.0 + rel_vol / 4, f"relative volume {rel_vol:.1f}x")
+    if gap_pct >= GAP_PCT:
+        c.add(2.0, f"gapped up {gap_pct:.1f}%")
+    if proximity >= HIGH_LOOKBACK_PCT:
+        c.add(1.5, f"at {proximity:.0f}% of 52-week high")
+    if rsi >= 70:
+        c.add(1.0, f"RSI {rsi:.0f} overbought momentum")
+    elif rsi <= 30:
+        c.add(1.0, f"RSI {rsi:.0f} oversold bounce setup")
+    return c if c.score > 0 else None
+
 
 
 def run_screens(tickers: list[str]) -> list[Candidate]:
     """Run every pre-built screen; return scored, ranked candidates."""
     daily, intraday = _batch_download(tickers)
     cands: dict[str, Candidate] = {}
-
-    def cand(t: str) -> Candidate:
-        return cands.setdefault(t, Candidate(ticker=t))
 
     for t in tickers:
         try:
@@ -116,61 +215,13 @@ def run_screens(tickers: list[str]) -> list[Candidate]:
             d_open = _px(daily, t, "Open")
             i_close = _px(intraday, t, "Close")
             i_vol = _px(intraday, t, "Volume")
-            if len(d_close) < 25 or i_close.empty:
-                continue
-
-            prev_close = float(d_close.iloc[-2])
-            last = float(i_close.iloc[-1])
-            if last < MIN_PRICE:
-                continue
-
-            # Today's session so far (intraday bars stamped today, ET).
-            today = i_close.index[-1].date()
-            sess = i_close[i_close.index.date == today]
-            sess_vol = i_vol[i_vol.index.date == today]
-            day_volume = float(sess_vol.sum()) if not sess_vol.empty else 0.0
-            dollar_vol = day_volume * last
-            if dollar_vol < MIN_DOLLAR_VOLUME:
-                continue
-
-            day_open = float(sess.iloc[0]) if not sess.empty else float(d_open.iloc[-1])
-            pct_change = (last - prev_close) / prev_close * 100
-            gap_pct = (day_open - prev_close) / prev_close * 100
-
-            # Relative volume: today's pace vs 20-day average daily volume.
-            avg_vol = float(d_vol.iloc[-21:-1].mean())
-            elapsed_frac = max(len(sess) / 26.0, 0.15)  # 26 fifteen-min bars/session
-            rel_vol = (day_volume / elapsed_frac) / avg_vol if avg_vol > 0 else 0.0
-
-            hi_52w = float(d_close.tail(252).max())
-            proximity = last / hi_52w * 100 if hi_52w > 0 else 0.0
-            rsi = _rsi(d_close)
-
-            c = cand(t)
-            c.facts.update(
-                last=round(last, 2), pct_change=round(pct_change, 2),
-                rel_vol=round(rel_vol, 2), gap_pct=round(gap_pct, 2),
-                rsi=round(rsi, 1), dollar_vol=int(dollar_vol),
-            )
-
-            if pct_change >= GAIN_PCT:
-                c.add(3.0 + pct_change / 10, f"up {pct_change:.1f}% intraday")
-            if rel_vol >= REL_VOL:
-                c.add(2.0 + rel_vol / 4, f"relative volume {rel_vol:.1f}x")
-            if gap_pct >= GAP_PCT:
-                c.add(2.0, f"gapped up {gap_pct:.1f}%")
-            if proximity >= HIGH_LOOKBACK_PCT:
-                c.add(1.5, f"at {proximity:.0f}% of 52-week high")
-            if rsi >= 70:
-                c.add(1.0, f"RSI {rsi:.0f} overbought momentum")
-            elif rsi <= 30:
-                c.add(1.0, f"RSI {rsi:.0f} oversold bounce setup")
+            i_open = _px(intraday, t, "Open")
+            c = _screen_one(t, d_close, d_vol, d_open, i_close, i_vol, i_open)
+            if c is not None:
+                cands[t] = c
         except Exception as exc:
             logger.debug("Screen skipped %s: %s", t, exc)
 
-    ranked = sorted(
-        (c for c in cands.values() if c.score > 0),
-        key=lambda c: c.score, reverse=True,
-    )
+    ranked = sorted(cands.values(), key=lambda c: c.score, reverse=True)
     logger.info("%d candidates passed the screens", len(ranked))
     return ranked

@@ -26,14 +26,38 @@ logger = logging.getLogger(__name__)
 ET = pytz.timezone("America/New_York")
 REPORT_ROOT = Path(__file__).resolve().parent.parent.parent / "reports" / "scanner"
 
+_XNYS_CAL = None
+
+
+def _xnys_calendar():
+    """NYSE calendar, lazily built; None when pandas_market_calendars is absent."""
+    global _XNYS_CAL
+    if _XNYS_CAL is None:
+        try:
+            import pandas_market_calendars as mcal
+        except ImportError:
+            return None
+        _XNYS_CAL = mcal.get_calendar("XNYS")
+    return _XNYS_CAL
+
 
 def market_is_open(now: datetime | None = None) -> bool:
+    """True during the NYSE regular session, exchange holidays excluded."""
     now = now or datetime.now(ET)
+    if now.tzinfo is None:
+        now = ET.localize(now)
     if now.weekday() >= 5:
         return False
-    open_t = now.replace(hour=9, minute=30, second=0, microsecond=0)
-    close_t = now.replace(hour=16, minute=0, second=0, microsecond=0)
-    return open_t <= now <= close_t
+    cal = _xnys_calendar()
+    if cal is None:  # fallback: no holiday data, assume a normal 9:30-16:00 day
+        open_t = now.replace(hour=9, minute=30, second=0, microsecond=0)
+        close_t = now.replace(hour=16, minute=0, second=0, microsecond=0)
+        return open_t <= now <= close_t
+    sched = cal.schedule(start_date=now.date(), end_date=now.date())
+    if sched.empty:  # exchange holiday
+        return False
+    row = sched.iloc[0]
+    return row["market_open"] <= now <= row["market_close"]
 
 
 def run_scan(top_n: int | None = None, deep_dive_enabled: bool | None = None) -> dict:

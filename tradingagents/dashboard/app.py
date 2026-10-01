@@ -49,7 +49,7 @@ def _status() -> dict:
         "scanning": service.scanning,
         "market_open": market_is_open(),
         "llm": {"ok": llm_ok, "note": llm_note},
-        "alpaca_connected": ks["alpaca_key"]["connected"] and ks["alpaca_secret"]["connected"],
+        "alpaca_keys_saved": ks["alpaca_key"]["connected"] and ks["alpaca_secret"]["connected"],
         "last_error": service.last_error,
         "last_scan": (
             {
