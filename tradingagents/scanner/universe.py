@@ -42,8 +42,9 @@ def _fetch_sp500() -> list[str]:
             logger.info("Using cached S&P 500 list (%d tickers)", len(tickers))
             return tickers
     try:
-        import requests
         from io import StringIO
+
+        import requests
 
         headers = {"User-Agent": "Mozilla/5.0 (compatible; TradingAgents-scanner/1.0)"}
         resp = requests.get(WIKI_SP500_URL, headers=headers, timeout=30)

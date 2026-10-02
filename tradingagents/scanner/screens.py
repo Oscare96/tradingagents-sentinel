@@ -21,6 +21,7 @@ from __future__ import annotations
 import logging
 import os
 from dataclasses import dataclass, field
+from datetime import datetime
 
 import pandas as pd
 
@@ -58,9 +59,9 @@ def _batch_download(tickers: list[str]) -> tuple[pd.DataFrame, pd.DataFrame]:
     without this, every 15-minute cycle would re-download a year of daily data
     for 500 tickers (~3.5 min) and the cycle could never keep up.
     """
-    from tradingagents.scanner.universe import CACHE_DIR
-    from datetime import datetime
     import hashlib
+
+    from tradingagents.scanner.universe import CACHE_DIR
 
     today = datetime.now(ET).strftime("%Y-%m-%d")
     uni_hash = hashlib.md5(",".join(sorted(tickers)).encode()).hexdigest()[:8]
@@ -203,8 +204,8 @@ def _screen_one(
 
 
 def run_screens(
-    tickers: list[str], now: "datetime | None" = None
-) -> "tuple[list[Candidate], dict]":
+    tickers: list[str], now: datetime | None = None
+) -> tuple[list[Candidate], dict]:
     """Run every pre-built screen; return (scored ranked candidates, stats).
 
     Tickers whose latest bar predates the expected trading session are
@@ -212,8 +213,6 @@ def run_screens(
     outage lets yesterday's prices into today's watchlist. ``stats`` reports
     how many were skipped so the omission is visible, not silent.
     """
-    from datetime import datetime
-
     now = now or datetime.now(ET)
     exp_session = expected_session_date(now)
     daily, intraday = _batch_download(tickers)

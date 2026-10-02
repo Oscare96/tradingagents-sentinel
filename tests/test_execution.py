@@ -11,45 +11,53 @@ from unittest.mock import patch
 
 import pytest
 
-from tradingagents.execution import config as cfg
+from tradingagents.execution import config as cfg, strategy as strat, trader as trader_mod
 from tradingagents.execution.broker import (
-    AlpacaPaperBroker, BrokerAuthError, BrokerError,
+    AlpacaPaperBroker,
+    BrokerAuthError,
+    BrokerError,
 )
 from tradingagents.execution.ledger import Ledger, StateCorruptError
 from tradingagents.execution.risk import (
-    Intent, Position, RiskState, bracket_prices, daily_pnl_pct, find_orphans,
-    gross_exposure_pct, kill_switch_tripped, size_position, validate_intent,
+    Intent,
+    Position,
+    RiskState,
+    bracket_prices,
+    daily_pnl_pct,
+    find_orphans,
+    gross_exposure_pct,
+    kill_switch_tripped,
+    size_position,
+    validate_intent,
 )
-from tradingagents.execution import strategy as strat
-from tradingagents.execution import trader as trader_mod
 from tradingagents.scanner.market_calendar import ET
 
 
 # ---------------------------------------------------------------- helpers
 def make_intent(**kw):
-    base = dict(symbol="AAA", side="buy", qty=10, reference_price=100.0,
-                quote_price=100.0, strategy_version=cfg.STRATEGY_VERSION,
-                client_order_id="sentinel-2026-10-01-AAA-buy-referencev1-1")
+    base = {"symbol": "AAA", "side": "buy", "qty": 10, "reference_price": 100.0,
+            "quote_price": 100.0, "strategy_version": cfg.STRATEGY_VERSION,
+            "client_order_id": "sentinel-2026-10-01-AAA-buy-referencev1-1"}
     base.update(kw)
     return Intent(**base)
 
 
 def make_state(**kw):
-    base = dict(equity=100_000.0, buying_power=100_000.0,
-                day_start_equity=100_000.0, positions=(),
-                open_order_symbols=frozenset(), open_client_order_ids=frozenset(),
-                new_positions_today=0, kill_engaged=False, market_open=True)
+    base = {"equity": 100_000.0, "buying_power": 100_000.0,
+            "day_start_equity": 100_000.0, "positions": (),
+            "open_order_symbols": frozenset(), "open_client_order_ids": frozenset(),
+            "new_positions_today": 0, "kill_engaged": False, "market_open": True}
     base.update(kw)
     return RiskState(**base)
 
 
 def v(intent, state, **kw):
-    k = dict(expected_strategy_version=cfg.STRATEGY_VERSION,
-             max_position_pct=cfg.MAX_POSITION_PCT,
-             max_concurrent_positions=cfg.MAX_CONCURRENT_POSITIONS,
-             max_gross_exposure_pct=cfg.MAX_GROSS_EXPOSURE_PCT,
-             max_new_positions_per_day=cfg.MAX_NEW_POSITIONS_PER_DAY,
-             max_quote_drift_pct=cfg.MAX_QUOTE_DRIFT_PCT)
+    k = {"expected_strategy_version": cfg.STRATEGY_VERSION,
+         "max_position_pct": cfg.MAX_POSITION_PCT,
+         "max_concurrent_positions": cfg.MAX_CONCURRENT_POSITIONS,
+         "max_gross_exposure_pct": cfg.MAX_GROSS_EXPOSURE_PCT,
+         "max_new_positions_per_day": cfg.MAX_NEW_POSITIONS_PER_DAY,
+         "max_quote_drift_pct": cfg.MAX_QUOTE_DRIFT_PCT}
     k.update(kw)
     return validate_intent(intent, state, **k)
 
@@ -457,7 +465,7 @@ def test_kill_switch_trips_on_daily_loss(tmp_path):
                         positions={"AAA": {"qty": 20, "market_value": 2_000.0}})
     trader_mod.run_trading_cycle(_scan(cands=[]), broker, led, now=_noon())
     broker.equity = 97_000.0  # -3% vs day start
-    out = trader_mod.run_trading_cycle(_scan(cands=[]), broker, led, now=_noon())
+    trader_mod.run_trading_cycle(_scan(cands=[]), broker, led, now=_noon())
     assert led.kill_engaged()
     assert broker.cancelled_all == 1 and broker.closed_all == 1
     # Next cycle keeps retrying emergency cleanup until the broker confirms

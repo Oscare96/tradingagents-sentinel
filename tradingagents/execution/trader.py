@@ -24,16 +24,21 @@ import logging
 from dataclasses import replace
 from datetime import datetime, timedelta
 
-from tradingagents.execution import config as cfg
+from tradingagents.execution import config as cfg, strategy as strat
 from tradingagents.execution.broker import AlpacaPaperBroker, BrokerError
 from tradingagents.execution.ledger import Ledger, StateCorruptError
 from tradingagents.execution.risk import (
-    Position, RiskState, bracket_prices, find_orphans,
-    kill_switch_tripped, validate_intent,
+    Position,
+    RiskState,
+    bracket_prices,
+    find_orphans,
+    kill_switch_tripped,
+    validate_intent,
 )
-from tradingagents.execution import strategy as strat
 from tradingagents.scanner.market_calendar import (
-    ET, market_is_open, session_close,
+    ET,
+    market_is_open,
+    session_close,
 )
 
 logger = logging.getLogger(__name__)
@@ -145,8 +150,8 @@ def _reconcile_fills(broker: AlpacaPaperBroker, ledger: Ledger,
         qty = float(o.get("filled_qty") or 0)
         price = float(o.get("filled_avg_price") or 0)
         if cid in submitted and cid not in filled_cids:
-            fields = dict(symbol=o["symbol"], side=o.get("side"), qty=qty,
-                          price=price, client_order_id=cid, broker_order_id=oid)
+            fields = {"symbol": o["symbol"], "side": o.get("side"), "qty": qty,
+                      "price": price, "client_order_id": cid, "broker_order_id": oid}
             ordered = float(submitted[cid].get("qty") or qty)
             if qty < ordered:
                 note("partial_fill", ordered_qty=ordered, **fields)

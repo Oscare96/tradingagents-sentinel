@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import json
 import logging
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
@@ -39,7 +39,7 @@ class Ledger:
 
     def record(self, date_str: str, event: str, **fields) -> None:
         entry = {
-            "ts": datetime.now(timezone.utc).isoformat(),
+            "ts": datetime.now(UTC).isoformat(),
             "event": event,
             **fields,
         }
@@ -116,6 +116,6 @@ class Ledger:
 
     def engage_kill(self, date_str: str, reason: str) -> None:
         self._kill_file().write_text(
-            f"Engaged {datetime.now(timezone.utc).isoformat()}: {reason}\n")
+            f"Engaged {datetime.now(UTC).isoformat()}: {reason}\n")
         self.record(date_str, "kill_switch_engaged", reason=reason)
         logger.warning("KILL SWITCH ENGAGED: %s", reason)
