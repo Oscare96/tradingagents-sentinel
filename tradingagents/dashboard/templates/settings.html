@@ -39,7 +39,7 @@
       <span class="status" id="s-alpaca_key"></span></div>
     <input type="password" id="alpaca_key" placeholder="Paste new key to replace" autocomplete="off">
     <div class="masked" id="m-alpaca_key"></div>
-    <div class="hint">Paper-trading key from alpaca.markets. Stored for the trading bot — the scanner itself never places trades.</div>
+    <div class="hint">Paper-trading key from alpaca.markets. Stored for the trading bot — the scanner itself never places trades. Use a <b>paper</b> key: the connection is paper-only and live keys are rejected.</div>
   </div>
   <div class="field">
     <div class="row"><label>Alpaca secret key</label>
@@ -54,8 +54,38 @@
     <div class="masked" id="m-openai_key"></div>
     <div class="hint">Powers the deep-dive: full agent analysis (analysts → debate → trader → risk → portfolio manager) on top scan candidates.</div>
   </div>
+  <div class="field">
+    <div class="row"><label>FreeLLMAPI unified key</label>
+      <span class="status" id="s-freellmapi_key"></span></div>
+    <input type="password" id="freellmapi_key" placeholder="Paste new key to replace" autocomplete="off">
+    <div class="masked" id="m-freellmapi_key"></div>
+    <div class="hint">Free testing mode: <b>1)</b> install the FreeLLMAPI gateway on this machine
+      (<code>curl -fsSL https://freellmapi.co/install.sh | bash</code>, then open
+      <code>http://localhost:3001</code>), <b>2)</b> add your free provider keys
+      (Google, Groq, Mistral, …) on its Keys page, <b>3)</b> paste the unified key
+      from its Keys page header here. The gateway routes deep-dive calls across
+      34 providers' free tiers with automatic failover.</div>
+  </div>
+  <div class="field">
+    <div class="row"><label>Deep-dive LLM provider</label></div>
+    <select id="llm_provider" style="width:100%; background:var(--bg); color:var(--txt);
+            border:1px solid var(--line); border-radius:8px; padding:10px; font-size:14px;">
+      <option value="openai">OpenAI (paid)</option>
+      <option value="freellmapi">FreeLLMAPI — free tiers (testing)</option>
+    </select>
+    <div class="hint">Which backend powers the deep-dive analysis. Switching to FreeLLMAPI
+      sets the model to its <code>auto</code> router; switching back restores the defaults.</div>
+  </div>
   <button id="save">Save keys</button>
+  <button id="test" style="margin-top:10px; background:transparent; color:var(--blue);
+    border:1px solid var(--blue);">Test paper connection</button>
+  <div class="hint" style="text-align:center;">Tests the currently saved keys against the Alpaca paper endpoint. Save first if you just pasted new ones.</div>
   <div id="msg"></div>
+  <div id="testmsg"></div>
+  <button id="testllm" style="margin-top:10px; background:transparent; color:var(--green);
+    border:1px solid var(--green);">Test LLM connection</button>
+  <div class="hint" style="text-align:center;">Lists models on the selected deep-dive provider — no tokens spent. Save first if you just pasted a new key.</div>
+  <div id="llmmsg"></div>
   <div class="note">
     Keys are stored only on this machine in <code>~/.config/tradingagents-scanner/keys.env</code>
     (readable by you alone), loaded as environment variables for the scanner, and never logged or
@@ -63,7 +93,7 @@
   </div>
 </main>
 <script>
-const FIELDS = ["alpaca_key", "alpaca_secret", "openai_key"];
+const FIELDS = ["alpaca_key", "alpaca_secret", "openai_key", "freellmapi_key"];
 function render(ks){
   for (const f of FIELDS){
     const el = document.getElementById("s-" + f), m = document.getElementById("m-" + f);
@@ -77,15 +107,55 @@ function render(ks){
   }
 }
 render({{ keys | tojson }});
+document.getElementById("llm_provider").value = {{ llm_provider | tojson }};
 document.getElementById("save").onclick = async () => {
   const body = {}; for (const f of FIELDS) body[f] = document.getElementById(f).value;
+  body.llm_provider = document.getElementById("llm_provider").value;
   const r = await fetch("/api/keys", {method:"POST",
     headers:{"Content-Type":"application/json"}, body: JSON.stringify(body)});
   const d = await r.json();
+  if (!d.ok) {
+    document.getElementById("msg").innerHTML = '<span style="color:#ff7b7b">✗ ' + d.error + '</span>';
+    return;
+  }
   render(d.keys);
   for (const f of FIELDS) document.getElementById(f).value = "";
   document.getElementById("msg").innerHTML = '<span class="ok">Saved ✓</span>';
   setTimeout(() => document.getElementById("msg").textContent = "", 3000);
+};
+document.getElementById("testllm").onclick = async () => {
+  const t = document.getElementById("llmmsg");
+  t.innerHTML = '<span class="missing">Testing…</span>';
+  try {
+    const r = await fetch("/api/llm/test", {method:"POST"});
+    const d = await r.json();
+    if (d.ok) {
+      t.innerHTML = '<span class="ok">✓ ' + d.provider + ' reachable at ' + d.endpoint +
+        ' — ' + d.model_count + ' models' +
+        (d.sample_models.length ? ' (e.g. ' + d.sample_models.join(", ") + ')' : '') + '</span>';
+    } else {
+      t.innerHTML = '<span style="color:#ff7b7b">✗ ' + d.error + '</span>';
+    }
+  } catch (e) {
+    t.innerHTML = '<span style="color:#ff7b7b">✗ request failed</span>';
+  }
+};
+document.getElementById("test").onclick = async () => {
+  const t = document.getElementById("testmsg");
+  t.innerHTML = '<span class="missing">Testing…</span>';
+  try {
+    const r = await fetch("/api/keys/test", {method:"POST"});
+    const d = await r.json();
+    if (d.ok) {
+      t.innerHTML = '<span class="ok">✓ Connected to Alpaca PAPER account ' +
+        d.account + ' — equity $' + d.equity +
+        (d.trading_blocked ? ' (⚠ trading blocked on this account)' : '') + '</span>';
+    } else {
+      t.innerHTML = '<span style="color:#ff7b7b">✗ ' + d.error + '</span>';
+    }
+  } catch (e) {
+    t.innerHTML = '<span style="color:#ff7b7b">✗ request failed</span>';
+  }
 };
 </script>
 </body>

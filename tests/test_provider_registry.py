@@ -41,6 +41,7 @@ def test_registry_membership():
     ("groq", "https://api.groq.com/openai/v1", NormalizedChatOpenAI, False),
     ("nvidia", "https://integrate.api.nvidia.com/v1", NormalizedChatOpenAI, False),
     ("ollama", "http://localhost:11434/v1", LocalCompatibleChatOpenAI, False),
+    ("freellmapi", "http://localhost:3001/v1", LocalCompatibleChatOpenAI, False),
 ])
 def test_registry_spec(provider, base_url, chat_class, responses):
     spec = OPENAI_COMPATIBLE_PROVIDERS[provider]
@@ -56,5 +57,9 @@ def test_key_optionality():
     assert OPENAI_COMPATIBLE_PROVIDERS["openai_compatible"].key_optional is True
     assert OPENAI_COMPATIBLE_PROVIDERS["openai_compatible"].require_base_url is True
     assert OPENAI_COMPATIBLE_PROVIDERS["xai"].key_optional is False
+    # FreeLLMAPI requires its unified dashboard key (not key-optional), and
+    # FREELLMAPI_BASE_URL overrides the default local endpoint.
+    assert OPENAI_COMPATIBLE_PROVIDERS["freellmapi"].key_optional is False
+    assert OPENAI_COMPATIBLE_PROVIDERS["freellmapi"].base_url_env == "FREELLMAPI_BASE_URL"
     # OLLAMA_BASE_URL is the only base-URL env override.
     assert OPENAI_COMPATIBLE_PROVIDERS["ollama"].base_url_env == "OLLAMA_BASE_URL"

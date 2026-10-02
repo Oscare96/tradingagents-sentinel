@@ -71,7 +71,11 @@ def index():
 
 @app.route("/settings")
 def settings():
-    return render_template("settings.html", keys=keystore.key_status())
+    return render_template(
+        "settings.html",
+        keys=keystore.key_status(),
+        llm_provider=keystore.get_llm_provider(),
+    )
 
 
 @app.get("/api/status")
@@ -92,9 +96,94 @@ def api_watchlist():
 @app.post("/api/keys")
 def api_keys():
     data = request.get_json(force=True, silent=True) or {}
-    allowed = {k: data.get(k, "") for k in ("alpaca_key", "alpaca_secret", "openai_key")}
+    allowed = {k: data.get(k, "") for k in keystore.KEY_MAP}
     keystore.save_keys(allowed)
-    return jsonify({"ok": True, "keys": keystore.key_status()})
+    provider = data.get("llm_provider")
+    if provider:
+        try:
+            keystore.set_llm_provider(provider)
+        except ValueError as exc:
+            return jsonify({"ok": False, "error": str(exc)}), 400
+    return jsonify(
+        {
+            "ok": True,
+            "keys": keystore.key_status(),
+            "llm_provider": keystore.get_llm_provider(),
+        }
+    )
+
+
+@app.post("/api/llm/test")
+def api_llm_test():
+    """Verify the selected deep-dive LLM provider is reachable.
+
+    Lists models via the provider's /v1/models endpoint -- no tokens are
+    spent. Never returns key material: only the provider name, a model count,
+    and a few model ids on success, or a safe error message on failure.
+    """
+    import urllib.request
+
+    provider = keystore.get_llm_provider()
+    if provider == "freellmapi":
+        base = os.environ.get("FREELLMAPI_BASE_URL", "http://localhost:3001/v1").rstrip("/")
+        key = os.environ.get("FREELLMAPI_API_KEY", "")
+    elif provider == "openai":
+        base = "https://api.openai.com/v1"
+        key = os.environ.get("OPENAI_API_KEY", "")
+    else:
+        return jsonify({"ok": False, "error": f"unsupported provider '{provider}'"})
+    if not key:
+        return jsonify(
+            {"ok": False, "error": f"no API key stored for provider '{provider}' -- save one first"}
+        )
+    try:
+        req = urllib.request.Request(
+            f"{base}/models", headers={"Authorization": f"Bearer {key}"}
+        )
+        with urllib.request.urlopen(req, timeout=20) as resp:
+            payload = json.loads(resp.read().decode("utf-8", "replace"))
+    except Exception as exc:  # network, auth, or bad response -- report safely
+        logger.warning("LLM connection test failed for %s: %s", provider, exc)
+        return jsonify({"ok": False, "error": f"{provider}: connection failed ({exc})"})
+    models = payload.get("data") or []
+    ids = [m.get("id", "?") for m in models if isinstance(m, dict)][:5]
+    return jsonify(
+        {
+            "ok": True,
+            "provider": provider,
+            "endpoint": base,
+            "model_count": len(models),
+            "sample_models": ids,
+        }
+    )
+
+
+@app.post("/api/keys/test")
+def api_keys_test():
+    """Verify the stored Alpaca keys against the PAPER endpoint.
+
+    Never returns key material: only a masked account number, equity and
+    buying power on success, or a safe error message on failure.
+    """
+    try:
+        from tradingagents.execution.broker import AlpacaPaperBroker, BrokerError
+    except ImportError as exc:
+        return jsonify({"ok": False, "error": f"execution layer unavailable: {exc}"})
+    try:
+        account = AlpacaPaperBroker().connect()
+    except BrokerError as exc:
+        logger.warning("Paper connection test failed: %s", exc)
+        return jsonify({"ok": False, "error": str(exc)})
+    num = str(account.get("account_number", ""))
+    return jsonify(
+        {
+            "ok": True,
+            "account": "****" + num[-4:] if num else "unknown",
+            "equity": account.get("equity"),
+            "buying_power": account.get("buying_power"),
+            "trading_blocked": bool(account.get("trading_blocked")),
+        }
+    )
 
 
 @app.post("/api/scanner/start")

@@ -231,6 +231,16 @@ OPENAI_COMPATIBLE_PROVIDERS: dict[str, ProviderSpec] = {
     "openai_compatible": ProviderSpec(
         require_base_url=True, key_optional=True, chat_class=LocalCompatibleChatOpenAI
     ),
+    # FreeLLMAPI: self-hosted gateway (github.com/tashfeenahmed/freellmapi)
+    # aggregating 34 providers' free tiers behind one OpenAI-compatible /v1
+    # endpoint. Runs at http://localhost:3001/v1 by default; clients auth with
+    # the unified key from its dashboard Keys page (FREELLMAPI_API_KEY). Use
+    # model "auto" (or "auto:fast" / "auto:<profile>") so its router picks the
+    # provider with free quota; any concrete model ID from its /v1/models
+    # list also works. FREELLMAPI_BASE_URL overrides the endpoint.
+    "freellmapi": ProviderSpec(base_url="http://localhost:3001/v1",
+                               base_url_env="FREELLMAPI_BASE_URL",
+                               chat_class=LocalCompatibleChatOpenAI),
 }
 
 

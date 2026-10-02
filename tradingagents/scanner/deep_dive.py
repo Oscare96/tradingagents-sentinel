@@ -7,8 +7,11 @@ risk team, portfolio manager -- producing a rated decision with suggested
 entry, stop-loss, and price target. Output is a research report for Oscar to
 review manually; nothing here places trades.
 
-Deep dives need a configured LLM provider (paid API key). When no key is
-present the scanner runs in screen-only mode and says so plainly.
+Deep dives need a configured LLM provider. That can be a paid provider key
+(OpenAI, Anthropic, ...) or the FreeLLMAPI self-hosted gateway, which routes
+across 34 providers' free tiers (set TRADINGAGENTS_LLM_PROVIDER=freellmapi,
+FREELLMAPI_API_KEY to its unified key, and the model to "auto"). When no key
+is present the scanner runs in screen-only mode and says so plainly.
 """
 
 from __future__ import annotations
@@ -26,6 +29,8 @@ _PROVIDER_KEY_ENV = {
     "bedrock": None,  # uses AWS credential chain instead
     "xai": "XAI_API_KEY",
     "deepseek": "DEEPSEEK_API_KEY",
+    # FreeLLMAPI self-hosted gateway: unified key from its dashboard Keys page.
+    "freellmapi": "FREELLMAPI_API_KEY",
 }
 
 
