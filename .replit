@@ -1,0 +1,12 @@
+run = "python -m master_trader.run"
+entrypoint = "master_trader/run.py"
+modules = ["python-3.12"]
+
+[deployment]
+deploymentTarget = "vm"
+build = ["sh", "-c", "python -m pip install -r master_trader/requirements.txt"]
+run = ["python", "-m", "master_trader.run"]
+
+[[ports]]
+localPort = 8000
+externalPort = 80

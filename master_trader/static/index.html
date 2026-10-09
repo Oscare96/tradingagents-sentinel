@@ -1,0 +1,14 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Master Trader · Command Center</title><link rel="stylesheet" href="/static/style.css"><script defer src="/static/app.js"></script></head>
+<body>
+<aside><a class="brand" href="#overview"><span class="brandmark">M</span> MASTER<span>TRADER</span></a><div class="side-label">COMMAND CENTER</div><nav id="nav"></nav><div class="side-bottom"><span class="dot"></span> Evidence before execution<br><small>One engine. Every decision recorded.</small></div></aside>
+<main>
+<header><div><div class="eyebrow">OSCAR'S TRADING WORKSPACE</div><h1 id="page-title">Overview</h1></div><div class="header-actions"><span id="connection-badge" class="badge">CONNECTING</span><button id="refresh">Refresh</button><button id="scan" class="primary">Run research</button></div></header>
+<div id="notice" class="notice">Connect to your dashboard to load service status.</div>
+<section id="login" class="panel login"><h2>Connect your workspace</h2><p>Enter the dashboard access token configured in Replit Secrets. It stays in this tab's memory.</p><form id="login-form"><input id="token" type="password" autocomplete="off" placeholder="Dashboard access token" required><button class="primary">Connect</button></form><p id="login-error" class="negative"></p></section>
+<div id="workspace" hidden><div id="page"></div></div>
+<footer><span id="updated">Waiting for service</span><span>UTC timestamps · Paper execution · Live locked</span></footer>
+</main>
+<dialog id="details"><button id="close-details" class="dialog-close">Close</button><div id="detail-content"></div></dialog>
+</body></html>
